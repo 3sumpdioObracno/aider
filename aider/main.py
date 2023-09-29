@@ -1,5 +1,6 @@
 import os
 import sys
+from pathlib import Path
 
 import configargparse
 import git
@@ -23,11 +24,15 @@ def main(args=None, input=None, output=None):
 
     git_root = get_git_root()
 
-    default_config_files = [
-        os.path.expanduser("~/.aider.conf.yml"),
-    ]
+    conf_fname = Path(".aider.conf.yml")
+
+    default_config_files = [conf_fname.resolve()]  # CWD
     if git_root:
-        default_config_files.insert(0, os.path.join(git_root, ".aider.conf.yml"))
+        git_conf = Path(git_root) / conf_fname  # git root
+        if git_conf not in default_config_files:
+            default_config_files.append(git_conf)
+    default_config_files.append(Path.home() / conf_fname)  # homedir
+    default_config_files = list(map(str, default_config_files))
 
     parser = configargparse.ArgumentParser(
         description="aider is GPT powered coding in your terminal",
@@ -50,8 +55,8 @@ def main(args=None, input=None, output=None):
         is_config_file=True,
         metavar="CONFIG_FILE",
         help=(
-            "Specify the config file (default: search for .aider.conf.yml in git root or home"
-            " directory)"
+            "Specify the config file (default: search for .aider.conf.yml in git root, cwd"
+            " or home directory)"
         ),
     )
 
@@ -146,6 +151,14 @@ def main(args=None, input=None, output=None):
         help="Set the color for assistant output (default: blue)",
     )
     parser.add_argument(
+        "--code-theme",
+        default="default",
+        help=(
+            "Set the markdown code theme (default: default, other options include monokai,"
+            " solarized-dark, solarized-light)"
+        ),
+    )
+    parser.add_argument(
         "--apply",
         metavar="FILE",
         help="Apply the changes from the given file instead of running the chat (debug)",
@@ -176,6 +189,11 @@ def main(args=None, input=None, output=None):
         action="store_false",
         dest="dirty_commits",
         help="Disable commits when repo is found dirty",
+    )
+    parser.add_argument(
+        "--encoding",
+        default="utf-8",
+        help="Specify the encoding to use when reading files (default: utf-8)",
     )
     parser.add_argument(
         "--openai-api-key",
@@ -239,7 +257,13 @@ def main(args=None, input=None, output=None):
         user_input_color=args.user_input_color,
         tool_output_color=args.tool_output_color,
         tool_error_color=args.tool_error_color,
+        dry_run=args.dry_run,
     )
+
+    if not git_root and args.git:
+        if io.confirm_ask("No git repo found, create one to track GPT's changes (recommended)?"):
+            git.Repo.init(os.getcwd())
+            io.tool_output("Git repository created in the current working directory.")
 
     if args.verbose:
         show = parser.format_values()
@@ -251,7 +275,14 @@ def main(args=None, input=None, output=None):
     io.tool_output(*sys.argv, log_only=True)
 
     if not args.openai_api_key:
-        io.tool_error("No OpenAI API key provided. Use --openai-api-key or env OPENAI_API_KEY.")
+        if os.name == "nt":
+            io.tool_error(
+                "No OpenAI API key provided. Use --openai-api-key or setx OPENAI_API_KEY."
+            )
+        else:
+            io.tool_error(
+                "No OpenAI API key provided. Use --openai-api-key or export OPENAI_API_KEY."
+            )
         return 1
 
     main_model = models.Model(args.model)
@@ -272,6 +303,7 @@ def main(args=None, input=None, output=None):
         map_tokens=args.map_tokens,
         verbose=args.verbose,
         assistant_output_color=args.assistant_output_color,
+        code_theme=args.code_theme,
         stream=args.stream,
         use_git=args.git,
     )
@@ -280,8 +312,9 @@ def main(args=None, input=None, output=None):
         coder.commit(ask=True, which="repo_files")
 
     if args.apply:
-        with open(args.apply, "r") as f:
-            content = f.read()
+        content = io.read_text(args.apply)
+        if content is None:
+            return
         coder.apply_updates(content)
         return
 

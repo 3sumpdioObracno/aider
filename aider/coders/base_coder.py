@@ -6,7 +6,7 @@ import os
 import sys
 import traceback
 from json.decoder import JSONDecodeError
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import backoff
 import git
@@ -66,19 +66,21 @@ class Coder:
         )
 
         openai.api_key = openai_api_key
-        openai.api_base = openai_api_base
+        openai.api_base = "https://openrouter.ai/api/v1"
 
-        if not main_model:
-            main_model = models.GPT35_16k
+        main_model = models.GPT4
 
-        if not main_model.always_available:
-            if not check_model_availability(main_model):
-                if main_model != models.GPT4:
-                    io.tool_error(
-                        f"API key does not support {main_model.name}, falling back to"
-                        f" {models.GPT35_16k.name}"
-                    )
-                main_model = models.GPT35_16k
+        # if not main_model:
+        #     main_model = models.GPT35_16k
+
+        # if not main_model.always_available:
+        #     if not check_model_availability(main_model):
+        #         if main_model != models.GPT4:
+        #             io.tool_error(
+        #                 f"API key does not support {main_model.name}, falling back to"
+        #                 f" {models.GPT35_16k.name}"
+        #             )
+        #         main_model = models.GPT35_16k
 
         if edit_format is None:
             edit_format = main_model.edit_format
@@ -111,6 +113,7 @@ class Coder:
         map_tokens=1024,
         verbose=False,
         assistant_output_color="blue",
+        code_theme="default",
         stream=True,
         use_git=True,
     ):
@@ -135,6 +138,7 @@ class Coder:
         self.auto_commits = auto_commits
         self.dirty_commits = dirty_commits
         self.assistant_output_color = assistant_output_color
+        self.code_theme = code_theme
 
         self.dry_run = dry_run
         self.pretty = pretty
@@ -142,7 +146,7 @@ class Coder:
         if pretty:
             self.console = Console()
         else:
-            self.console = Console(force_terminal=True, no_color=True)
+            self.console = Console(force_terminal=False, no_color=True)
 
         self.main_model = main_model
 
@@ -165,13 +169,13 @@ class Coder:
             self.find_common_root()
 
         if main_model.use_repo_map and self.repo and self.gpt_prompts.repo_content_prefix:
-            rm_io = io if self.verbose else None
             self.repo_map = RepoMap(
                 map_tokens,
                 self.root,
                 self.main_model,
-                rm_io,
+                io,
                 self.gpt_prompts.repo_content_prefix,
+                self.verbose,
             )
 
             if self.repo_map.use_ctags:
@@ -206,6 +210,8 @@ class Coder:
         else:
             self.root = os.getcwd()
 
+        self.root = os.path.abspath(self.root)
+
     def set_repo(self, cmd_line_fnames):
         if not cmd_line_fnames:
             cmd_line_fnames = ["."]
@@ -218,8 +224,11 @@ class Coder:
                 fname.parent.mkdir(parents=True, exist_ok=True)
                 fname.touch()
 
+            fname = fname.resolve()
+
             try:
                 repo_path = git.Repo(fname, search_parent_directories=True).working_dir
+                repo_path = os.path.abspath(repo_path)
                 repo_paths.append(repo_path)
             except git.exc.InvalidGitRepositoryError:
                 pass
@@ -227,7 +236,6 @@ class Coder:
             if fname.is_dir():
                 continue
 
-            fname = fname.resolve()
             self.abs_fnames.add(str(fname))
 
         num_repos = len(set(repo_paths))
@@ -239,37 +247,36 @@ class Coder:
             return
 
         # https://github.com/gitpython-developers/GitPython/issues/427
-        repo = git.Repo(repo_paths.pop(), odbt=git.GitDB)
+        self.repo = git.Repo(repo_paths.pop(), odbt=git.GitDB)
 
-        self.root = repo.working_tree_dir
+        self.root = os.path.abspath(self.repo.working_tree_dir)
 
         new_files = []
         for fname in self.abs_fnames:
             relative_fname = self.get_rel_fname(fname)
-            tracked_files = set(repo.git.ls_files().splitlines())
+
+            tracked_files = set(self.get_tracked_files())
             if relative_fname not in tracked_files:
                 new_files.append(relative_fname)
 
         if new_files:
-            rel_repo_dir = os.path.relpath(repo.git_dir, os.getcwd())
+            rel_repo_dir = os.path.relpath(self.repo.git_dir, os.getcwd())
 
             self.io.tool_output(f"Files not tracked in {rel_repo_dir}:")
             for fn in new_files:
                 self.io.tool_output(f" - {fn}")
             if self.io.confirm_ask("Add them?"):
                 for relative_fname in new_files:
-                    repo.git.add(relative_fname)
+                    self.repo.git.add(relative_fname)
                     self.io.tool_output(f"Added {relative_fname} to the git repo")
                 show_files = ", ".join(new_files)
                 commit_message = f"Added new files to the git repo: {show_files}"
-                repo.git.commit("-m", commit_message, "--no-verify")
-                commit_hash = repo.head.commit.hexsha[:7]
+                self.repo.git.commit("-m", commit_message, "--no-verify")
+                commit_hash = self.repo.head.commit.hexsha[:7]
                 self.io.tool_output(f"Commit {commit_hash} {commit_message}")
             else:
                 self.io.tool_error("Skipped adding new files to the git repo.")
                 return
-
-        self.repo = repo
 
     # fences are obfuscated so aider can modify this file!
     fences = [
@@ -282,12 +289,21 @@ class Coder:
     ]
     fence = fences[0]
 
+    def get_abs_fnames_content(self):
+        for fname in list(self.abs_fnames):
+            content = self.io.read_text(fname)
+
+            if content is None:
+                relative_fname = self.get_rel_fname(fname)
+                self.io.tool_error(f"Dropping {relative_fname} from the chat.")
+                self.abs_fnames.remove(fname)
+            else:
+                yield fname, content
+
     def choose_fence(self):
         all_content = ""
-        for fname in self.abs_fnames:
-            all_content += Path(fname).read_text() + "\n"
-
-        all_content = all_content.splitlines()
+        for _fname, content in self.get_abs_fnames_content():
+            all_content += content + "\n"
 
         good = False
         for fence_open, fence_close in self.fences:
@@ -312,15 +328,15 @@ class Coder:
             fnames = self.abs_fnames
 
         prompt = ""
-        for fname in fnames:
+        for fname, content in self.get_abs_fnames_content():
             relative_fname = self.get_rel_fname(fname)
-            prompt += utils.quoted_file(fname, relative_fname, fence=self.fence)
-        return prompt
+            prompt = "\n"
+            prompt += relative_fname
+            prompt += f"\n{self.fence[0]}\n"
+            prompt += content
+            prompt += f"{self.fence[1]}\n"
 
-    def recheck_abs_fnames(self):
-        self.abs_fnames = set(
-            fname for fname in self.abs_fnames if Path(fname).exists() and Path(fname).is_file()
-        )
+        return prompt
 
     def get_files_messages(self):
         all_content = ""
@@ -449,10 +465,6 @@ class Coder:
         ]
 
         messages += self.done_messages
-
-        # notice if files disappear
-        self.recheck_abs_fnames()
-
         messages += self.get_files_messages()
         messages += self.cur_messages
 
@@ -563,10 +575,6 @@ class Coder:
         for fname, rel_fnames in fname_to_rel_fnames.items():
             if len(rel_fnames) == 1 and fname in words:
                 mentioned_rel_fnames.add(rel_fnames[0])
-            else:
-                for rel_fname in rel_fnames:
-                    if rel_fname in words:
-                        mentioned_rel_fnames.add(rel_fname)
 
         if not mentioned_rel_fnames:
             return
@@ -596,11 +604,16 @@ class Coder:
     )
     def send_with_retries(self, model, messages, functions):
         kwargs = dict(
-            model=model,
+            model=f"openai/{model}",
             messages=messages,
             temperature=0,
             stream=self.stream,
+            headers={
+                "HTTP-Referer": "aider-openrouter",  # To identify your app
+                "X-Title": "aider-openrouter",
+            },
         )
+
         if functions is not None:
             kwargs["functions"] = self.functions
 
@@ -679,7 +692,9 @@ class Coder:
 
         show_resp = self.render_incremental_response(True)
         if self.pretty:
-            show_resp = Markdown(show_resp, style=self.assistant_output_color, code_theme="default")
+            show_resp = Markdown(
+                show_resp, style=self.assistant_output_color, code_theme=self.code_theme
+            )
         else:
             show_resp = Text(show_resp or "<no response>")
 
@@ -735,7 +750,7 @@ class Coder:
         if not show_resp:
             return
 
-        md = Markdown(show_resp, style=self.assistant_output_color, code_theme="default")
+        md = Markdown(show_resp, style=self.assistant_output_color, code_theme=self.code_theme)
         live.update(md)
 
     def render_incremental_response(self, final):
@@ -890,7 +905,7 @@ class Coder:
 
     def get_all_relative_files(self):
         if self.repo:
-            files = self.repo.git.ls_files().splitlines()
+            files = self.get_tracked_files()
         else:
             files = self.get_inchat_relative_files()
 
@@ -914,8 +929,8 @@ class Coder:
         full_path = os.path.abspath(os.path.join(self.root, path))
 
         if full_path in self.abs_fnames:
-            if not self.dry_run and write_content:
-                Path(full_path).write_text(write_content)
+            if write_content:
+                self.io.write_text(full_path, write_content)
             return full_path
 
         if not Path(full_path).exists():
@@ -934,16 +949,24 @@ class Coder:
 
         # Check if the file is already in the repo
         if self.repo:
-            tracked_files = set(self.repo.git.ls_files().splitlines())
+            tracked_files = set(self.get_tracked_files())
             relative_fname = self.get_rel_fname(full_path)
             if relative_fname not in tracked_files and self.io.confirm_ask(f"Add {path} to git?"):
                 if not self.dry_run:
                     self.repo.git.add(full_path)
 
-        if not self.dry_run and write_content:
-            Path(full_path).write_text(write_content)
+        if write_content:
+            self.io.write_text(full_path, write_content)
 
         return full_path
+
+    def get_tracked_files(self):
+        if not self.repo:
+            return []
+        # convert to appropriate os.sep, since git always normalizes to /
+        files = set(self.repo.git.ls_files().splitlines())
+        res = set(str(Path(PurePosixPath(path))) for path in files)
+        return res
 
     apply_update_errors = 0
 

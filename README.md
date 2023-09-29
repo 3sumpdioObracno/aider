@@ -1,3 +1,18 @@
+# Test new LLMs (Llama2, CodeLlama, etc.)
+
+Test other LLMs (codellama, llama2, anthropic, cohere, etc.) with Aider, we just open-sourced a 1-click proxy to translate openai calls to huggingface, anthropic, togetherai, etc. api calls.
+
+**code**
+```
+$ pip install litellm
+$ litellm --model huggingface/bigcode/starcoder
+#INFO:     Uvicorn running on http://0.0.0.0:8000
+```
+
+Docs: https://docs.litellm.ai/docs/proxy_server
+
+I'd love to know if this solves any problem for you
+
 # aider is GPT powered coding in your terminal
 
 `aider` is a command-line chat tool that allows you to write and edit
@@ -16,6 +31,7 @@ It also has features that [help GPT-4 understand and modify larger codebases](ht
 - [In-chat commands](#in-chat-commands)
 - [Tips](#tips)
 - [GPT-4 vs GPT-3.5](#gpt-4-vs-gpt-35)
+- [FAQ](https://aider.chat/docs/faq.html)
 
 ## Getting started
 
@@ -58,18 +74,18 @@ You can find more chat transcripts on the [examples page](https://aider.chat/exa
 
 ## Installation
 
-1. Install the package:
-  * PyPI: `pip install aider-chat`
-  * GitHub: `pip install git+https://github.com/paul-gauthier/aider.git`
-  * Local clone: `pip install -e .` 
+1. Install the package with pip:
+  * PyPI: `python -m pip install aider-chat`
+  * GitHub: `python -m pip install git+https://github.com/paul-gauthier/aider.git`
+  * Local clone: `python -m pip install -e .` 
 
 2. Set up your OpenAI API key:
-  * As an environment variable: `export OPENAI_API_KEY=sk-...`
-  * Or, by including `openai-api-key: sk-...` in an `.aider.config.yml` file
+  * As an environment variable:
+    * `export OPENAI_API_KEY=sk-...` on Linux or Mac
+    * `setx OPENAI_API_KEY sk-...` in Windows PowerShell
+  * Or include `openai-api-key: sk-...` in an `.aider.conf.yml` file in your home directory or at the root of your git repo, alongside the `.git` dir.
 
-3. Optionally, install [universal ctags](https://github.com/universal-ctags/ctags). This is helpful if you plan to use aider and GPT-4 with repositories that have more than a handful of files.  This allows aider to build a [map of your entire git repo](https://aider.chat/docs/ctags.html) and share it with GPT to help it better understand and modify large codebases.
-  * The `ctags` command needs to be on your shell path so that it will run by default when aider invokes `ctags ...`.
-  * You need a build which includes the json feature. You can check by running `ctags --version` and looking for `+json` in the `Optional compiled features` list.
+3. Optionally, install [universal ctags](https://github.com/universal-ctags/ctags). This is helpful if you plan to use aider and GPT-4 with repositories that have more than a handful of files.  This allows aider to build a [map of your entire git repo](https://aider.chat/docs/ctags.html) and share it with GPT to help it better understand and modify large codebases. See the [FAQ entry about ctags](https://aider.chat/docs/faq.html#how-do-i-get-ctags-working) for more info.
 
 ## Usage
 
@@ -77,6 +93,12 @@ Run the `aider` tool by executing the following command:
 
 ```
 aider <file1> <file2> ...
+```
+
+If your pip install did not place the `aider` executable on your path, you can invoke aider like this:
+
+```
+python -m aider.main <file1> <file2>
 ```
 
 Replace `<file1>`, `<file2>`, etc., with the paths to the source code files you want to work on.
@@ -144,6 +166,9 @@ So aider has
 to ask GPT-3.5 to return a new copy of the "whole file" with edits included.
 This rapidly uses up tokens and can hit the limits of the context window.
 
+For more detailed information and a quantitative comparison, here are
+[code editing benchmark results for GPT-3.5 and GPT-4](https://aider.chat/docs/benchmarks.html).
+
 Aider disables the
 [repository map feature](https://aider.chat/docs/ctags.html)
 when used with GPT-3.5 models.
@@ -165,7 +190,7 @@ This minimizes your use of the context window, as well as costs.
 
 ## Kind words from users
 
-* The best AI coding assistant so far." -- [Matthew Berman](https://www.youtube.com/watch?v=df8afeb1FY8)
+* "The best AI coding assistant so far." -- [Matthew Berman](https://www.youtube.com/watch?v=df8afeb1FY8)
 * "Aider ... has easily quadrupled my coding productivity." -- [SOLAR_FIELDS](https://news.ycombinator.com/item?id=36212100)
 * "What an amazing tool. It's incredible." -- [valyagolev](https://github.com/paul-gauthier/aider/issues/6#issue-1722897858)
 * "It was WAY faster than I would be getting off the ground and making the first few working versions." -- [Daniel Feldman](https://twitter.com/d_feldman/status/1662295077387923456)
